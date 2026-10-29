@@ -1,0 +1,241 @@
+import geopandas as gpd
+from geopandas import GeoDataFrame
+from shapely.geometry import LineString
+from shapely.ops import unary_union
+import pandas as pd
+import os
+import geopandas as gpd
+from shapely.geometry import LineString, Point
+import numpy as np
+
+os.environ["SHAPE_RESTORE_SHX"] = "YES"
+
+class WalkRoad:
+    def __init__(self) -> None:
+        self.cd = '11'
+        self.srcfile = f'C:\\Users\\Admin\\Desktop\\프로세스 고도화\\인도 자르기\\rd\\src_{self.cd}.shp'
+        self.retfile = f'C:\\Users\\Admin\\Desktop\\프로세스 고도화\\인도 자르기\\result_{self.cd}_22.shp'
+        self.errfile = f'C:\\Users\\Admin\\Desktop\\프로세스 고도화\\인도 자르기\\err_{self.cd}_22.shp'
+        self.rdfile = f'C:\\Users\\Admin\\Desktop\\프로세스 고도화\\인도 자르기\\road_{self.cd}.shp'
+
+    def step1(self):
+        gdf: GeoDataFrame = gpd.read_file(self.srcfile)
+        self.rd_gdf: GeoDataFrame = gpd.read_file(self.rdfile)
+        gdf = gdf.set_crs(epsg=5186, allow_override=True)
+        gdf = gdf.to_crs(epsg=5179)
+        new_lines = []
+        err_lines = []
+        
+        cnt =0
+        for line in gdf.geometry:       
+            if isinstance(line, LineString):
+                segments = self.split_line_at_sharp_angles(line)
+                
+                # ret = self.check_result(segments)
+                ret2 = self.check_result2(segments, line)
+                if ret2 is None:
+                    
+                    err_lines.append(self.merge_linestrings(segments))
+                    continue
+                
+                new_lines.extend(ret2)
+                
+                if cnt %10 ==0:
+                    print('-')
+                
+                cnt +=1
+
+        # 새로운 GeoDataFrame 생성
+        new_gdf = gpd.GeoDataFrame(geometry=new_lines, crs=gdf.crs)
+        err_gdf = gpd.GeoDataFrame(geometry=err_lines, crs=gdf.crs)
+
+        # 처리된 결과를 SHP 파일로 저장
+        new_gdf.to_file(self.retfile)
+        err_gdf.to_file(self.errfile)
+    
+    # 길이로 판단
+    def check_result(self, segments):
+        if len(segments) == 2:
+            l1: LineString = segments[0]
+            l2: LineString = segments[1]
+            
+            if l1.length > l2.length:
+                return [l1]
+            else:
+                return [l2]
+                
+        return None
+    
+    # 도로 boundary와 떨어진 거리에 따라 판단
+    def check_result2(self, segments, wk_line) :
+        if len(segments) == 2:
+            l1:LineString = segments[0]
+            l2:LineString = segments[1]
+            
+            intersect_roads = self.rd_gdf[self.rd_gdf['geometry'].intersects(wk_line)]
+            union_road = unary_union(intersect_roads.geometry)
+            road_boundary = union_road.boundary
+            
+            mid_point_l1 = Point(l1.interpolate(0.5, normalized=True))
+            mid_point_l2 = Point(l2.interpolate(0.5, normalized=True))
+            
+            distance_l1 = mid_point_l1.distance(road_boundary)
+            distance_l2 = mid_point_l2.distance(road_boundary)
+            
+            if distance_l1 > distance_l2 : 
+                return [l1]
+            else :
+                return [l2]
+            
+        return None
+
+
+    # 두 벡터 사이의 각도 계산
+    def angle_between_vectors(self, v1, v2):
+        dot_product = np.dot(v1, v2)
+        norms = np.linalg.norm(v1) * np.linalg.norm(v2)
+        cos_theta = dot_product / norms
+        cos_theta = np.clip(cos_theta, -1.0, 1.0)
+        angle = np.arccos(cos_theta)
+        return np.degrees(angle)
+
+    # 각이 90도 이하인 지점 기준으로 라인 분리 --> 95도로 수정
+    def split_line_at_sharp_angles(self, line):
+        if isinstance(line, LineString):
+            line_coords = list(line.coords)
+        else:
+            line_coords = line
+        
+        if line_coords[0] != line_coords[-1]:
+            line_coords.append(line_coords[0])
+        
+        first_coord = line_coords[0]
+        
+        sharp_angles = []
+        anglesss = []
+        # 각도 계산하여 90도 이하인 지점을 찾기
+        for i in range(1, len(line_coords) - 1):
+            angle = self.calculate_angle(line_coords[i - 1], line_coords[i], line_coords[i + 1])
+            anglesss.append(angle)
+            if angle <= 95:
+                sharp_angles.append(i)
+
+        first_coord_angle = self.calculate_angle(line_coords[-2], line_coords[-1], line_coords[1])
+        anglesss.append(first_coord_angle)
+        if first_coord_angle <= 95 :
+            sharp_angles.append(0)
+                
+        if not sharp_angles:
+            return [LineString(line_coords)]
+
+        segments = []
+        if len(sharp_angles) == 2 :
+            ln1 = LineString(line_coords[sharp_angles[0]:sharp_angles[1]+1])
+            ln2 = LineString(line_coords[sharp_angles[1]:] + line_coords[0:sharp_angles[0]+1])
+            segments.append(ln1)
+            segments.append(ln2)
+            
+            print(f'coords : {line_coords}')
+            print(f'angle : {anglesss}')
+            print(f'===> {sharp_angles}')
+            print(f'segments : {segments}')
+            
+            print('')
+            
+            
+        # for idx in sharp_angles:
+        #     segment = LineString(line_coords[start_idx:idx + 1])
+        #     if len(segment.coords) > 1 :
+        #         segments.append(segment)
+        #     start_idx = idx
+        
+        # segments.append(LineString(line_coords[start_idx:]))
+                
+        # line1 = []
+        # ret_segments = []
+        # for segment in segments:
+        #     ll = list(segment.coords)
+            
+        #     if first_coord in ll:
+        #         line1.append(segment)
+            
+        #         # print(f"{ll[0]} -- {ll[-1]}")
+        #     else:
+        #         ret_segments.append(segment)
+            
+        # ret_segments.extend(self.merge_lines_if_angles_allow(line1[0], line1[1]))
+        
+        return segments
+    
+    
+    # 두 라인이 닿는 점에서 각도가 90도 이상인 경우 병합
+    def merge_lines_if_angles_allow(self, line1, line2):
+        # 맞닫는 점을 찾기
+        coords1 = list(line1.coords)
+        coords2 = list(line2.coords)
+
+        # 마지막 점의 인덱스
+        last_point1 = coords1[-1]
+        last_point2 = coords2[0]
+        
+        # 맞닫는 점과 끝 점이 서로 같은 경우
+        if last_point1 == last_point2:
+            angle = self.calculate_angle(coords1[-2], last_point1, coords2[1])
+            if angle >= 95:
+                # 병합
+                return [LineString(coords1 + coords2[1:])]
+            
+        last_point1 = coords1[0]
+        last_point2 = coords2[-1]
+        
+        # 맞닫는 점이란 끝 점이 서로 같은 경우
+        if last_point1 == last_point2:
+            angle = self.calculate_angle(coords1[-2], last_point1, coords2[1])
+            if angle is np.isnan(angle).any() or angle >= 95:
+                # 병합
+                return [LineString(coords2 + coords1[1:])]
+            
+        return [line1, line2]
+    
+    # 세 점 사이의 각도 계산
+    def calculate_angle(self, pointA, pointB, pointC):
+        # 벡터 BA, BC 계산
+        BA = np.array(pointA) - np.array(pointB)
+        BC = np.array(pointC) - np.array(pointB)
+        
+        # 벡터 간의 내적 계산
+        dot_product = np.dot(BA, BC)
+        
+        if dot_product  == 0:
+            return 180
+        
+        # 벡터의 크기 계산
+        norm_BA = np.linalg.norm(BA)
+        norm_BC = np.linalg.norm(BC)
+        
+        # 각도 계산 (라디안)
+        cos_theta = dot_product / (norm_BA * norm_BC)
+        cos_theta = np.clip(cos_theta, -1.0, 1.0)  # 오차 방지를 위해 값 클리핑
+        angle_radians = np.arccos(cos_theta)
+        
+        # 라디안을 도(degree)로 변환
+        angle_degrees = np.degrees(angle_radians)
+        
+        return angle_degrees
+
+    # 라인 객체 병합
+    def merge_linestrings(self, line_strings):
+        if not line_strings:
+            return None  # 빈 리스트 처리
+
+        merged_coords = []
+
+        for line in line_strings:
+            merged_coords.extend(list(line.coords))  # 모든 좌표를 추가
+
+        return LineString(merged_coords)
+        
+        
+if __name__== '__main__':
+    wk = WalkRoad()
+    wk.step1()
